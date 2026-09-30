@@ -130,3 +130,17 @@ detectable, which is what you want for an audit trail.
 ## License
 
 MIT
+
+## Docker
+
+```bash
+docker pull wallydk24/receiptchain
+docker run --rm -e RECEIPTCHAIN_KEY=$KEY -v receipts:/data wallydk24/receiptchain \
+  emit --log /data/receipts.jsonl --job-id nightly \
+  --started-at 2026-09-30T09:00:00-04:00 --finished-at 2026-09-30T09:07:12-04:00 \
+  --status ok --inputs "..." --outputs "..."
+docker run --rm -e RECEIPTCHAIN_KEY=$KEY -v receipts:/data wallydk24/receiptchain \
+  verify --log /data/receipts.jsonl
+```
+
+The HMAC key is never baked into the image — pass it at runtime.
