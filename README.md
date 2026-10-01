@@ -144,3 +144,19 @@ docker run --rm -e RECEIPTCHAIN_KEY=$KEY -v receipts:/data wallydk24/receiptchai
 ```
 
 The HMAC key is never baked into the image — pass it at runtime.
+
+## Web UI
+
+`receiptchain serve` runs a small web dashboard in the shared wally-brand
+skin: chain integrity status (intact / broken with details), per-job cards,
+the recent receipt timeline, and an emit form. Verification runs live on
+every page load; the key still comes only from the server's runtime config.
+
+```bash
+docker run -p 8080:8080 -e RECEIPTCHAIN_KEY=$KEY -v receipts:/data \
+  wallydk24/receiptchain serve --log /data/receipts.jsonl
+# or locally:
+RECEIPTCHAIN_KEY=$KEY python3 receiptchain.py serve --log receipts.jsonl
+```
+
+Then open http://localhost:8080/. `GET /healthz` returns `ok`.

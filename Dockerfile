@@ -16,8 +16,13 @@ FROM python:3.12-alpine
 
 WORKDIR /app
 COPY receiptchain.py ./
+COPY brand/ ./brand/
 USER 1000
+EXPOSE 8080
 
 VOLUME ["/data"]
+
+# Web UI: docker run -p 8080:8080 -e RECEIPTCHAIN_KEY=$KEY -v receipts:/data \
+#           wallydk24/receiptchain serve --log /data/receipts.jsonl
 ENTRYPOINT ["python3", "/app/receiptchain.py"]
 CMD ["--help"]
