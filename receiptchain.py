@@ -264,6 +264,123 @@ def cmd_verify(args: argparse.Namespace) -> None:
     sys.exit(1 if breaks else 0)
 
 
+# ---------------------------------------------------------------- audit
+
+def parse_ts(value):
+    """Parse an ISO-8601 timestamp; naive values are assumed UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed
+
+
+def load_expectations(path):
+    with open(path) as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        die("expectations file must be a JSON object: %s" % path)
+    jobs = data.get("jobs", {})
+    if not isinstance(jobs, dict):
+        die("expectations 'jobs' must be an object: %s" % path)
+    try:
+        grace = float(data.get("grace_mult", 2.0))
+    except (TypeError, ValueError):
+        die("expectations 'grace_mult' must be a number: %s" % path)
+    if grace <= 0:
+        die("expectations 'grace_mult' must be positive: %s" % path)
+    return grace, jobs
+
+
+def cmd_audit(args):
+    key = load_key(args)
+    log_path = args.log or default_log()
+    if not os.path.exists(log_path):
+        die("log not found: %s" % log_path)
+    grace_mult, expected = load_expectations(args.expectations)
+
+    receipts, breaks, per_job = verify_chain(log_path, key)
+    now = dt.datetime.now(dt.timezone.utc)
+    epoch = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+
+    by_job = {}
+    for _, r in receipts:
+        by_job.setdefault(r.get("job_id", "?"), []).append(r)
+    for rs in by_job.values():
+        rs.sort(key=lambda r: parse_ts(r.get("finished_at")) or epoch)
+
+    rows = []  # (attention, status, job, detail)
+    for job in sorted(expected):
+        spec = expected[job] or {}
+        rs = by_job.get(job, [])
+        if spec.get("runonce"):
+            if not rs:
+                rows.append((True, "PENDING", job, "no receipts yet (one-shot)"))
+            elif any(r.get("status") == "ok" for r in rs):
+                rows.append((False, "OK", job, "%d receipt(s), ran" % len(rs)))
+            else:
+                rows.append((True, "FAILED", job,
+                             "%d receipt(s), none ok" % len(rs)))
+            continue
+        every = spec.get("every_minutes")
+        if not rs:
+            rows.append((True, "MISSING", job, "no receipts in log"))
+            continue
+        if not isinstance(every, (int, float)) or every <= 0:
+            rows.append((False, "OK", job,
+                         "last run %s (no cadence set)" % rs[-1].get("finished_at")))
+            continue
+        last_ts = parse_ts(rs[-1].get("finished_at"))
+        day_ago = now - dt.timedelta(hours=24)
+        runs_24h = sum(1 for r in rs
+                       if (parse_ts(r.get("finished_at")) or epoch) >= day_ago)
+        failed_24h = sum(1 for r in rs
+                         if r.get("status") == "failed"
+                         and (parse_ts(r.get("finished_at")) or epoch) >= day_ago)
+        if last_ts is None:
+            rows.append((True, "STALE", job, "last run timestamp unparseable"))
+        else:
+            age_min = (now - last_ts).total_seconds() / 60
+            limit = every * grace_mult
+            if age_min > limit:
+                rows.append((True, "STALE", job,
+                             "last run %.1fh ago (expected every %gm, grace %gx)"
+                             % (age_min / 60, every, grace_mult)))
+            elif failed_24h:
+                rows.append((True, "DEGRADED", job,
+                             "%d failed run(s) in last 24h, last run %.0fm ago"
+                             % (failed_24h, age_min)))
+            else:
+                rows.append((False, "OK", job,
+                             "last run %.0fm ago, %d run(s)/24h"
+                             % (age_min, runs_24h)))
+
+    untracked = sorted(set(by_job) - set(expected))
+    n_attention = sum(1 for a, _, _, _ in rows if a) + len(breaks)
+
+    print("receiptchain audit — %s" % now.isoformat(timespec="seconds"))
+    if breaks:
+        print("chain: BROKEN (%d problem(s))" % len(breaks))
+        for b in breaks[:10]:
+            print("  - " + b)
+        if len(breaks) > 10:
+            print("  ... and %d more" % (len(breaks) - 10))
+    else:
+        print("chain: INTACT (%d receipts)" % len(receipts))
+    for attention, status, job, detail in rows:
+        mark = "!" if attention else " "
+        print("%s %-8s %-34s %s" % (mark, status, job, detail))
+    for job in untracked:
+        print("  UNTRACKED  %-34s %d receipt(s) not in expectations"
+              % (job, len(by_job[job])))
+    print("attention: %d item(s)" % n_attention if n_attention else "all clear")
+    sys.exit(1 if n_attention else 0)
+
+
 # ---------------------------------------------------------------- cli
 
 def main() -> None:
@@ -299,6 +416,15 @@ def main() -> None:
     p = sub.add_parser("verify", help="Verify the whole chain and print per-job summaries.")
     common(p)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("audit", help="Audit the fleet: chain integrity plus "
+                                     "expected-vs-actual job runs.")
+    common(p)
+    p.add_argument("--expectations", required=True,
+                   help="JSON file mapping job ids to {every_minutes} or "
+                        "{runonce: true}; optional top-level grace_mult "
+                        "(default 2.0).")
+    p.set_defaults(func=cmd_audit)
 
     sv = sub.add_parser("serve", help="Run the branded web UI (dashboard + emit).")
     common(sv)

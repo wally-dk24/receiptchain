@@ -73,6 +73,47 @@ verifies again — all in a temp dir):
 ./demo.sh
 ```
 
+### Auditing the fleet
+
+`verify` checks the chain; `audit` checks the fleet. Given an
+expectations file mapping job ids to their cadence, it reports every
+expected job as OK, STALE (overdue past `grace_mult` x its interval),
+MISSING (never emitted), DEGRADED (failed runs in the last 24h), or
+PENDING/FAILED for one-shot jobs — plus any UNTRACKED jobs emitting
+receipts outside the expectations file. Exit code is 1 when anything
+needs attention, so it drops straight into a cron job or a report-prep
+script.
+
+```bash
+./receiptchain.py audit --expectations expectations.json
+```
+
+```json
+{
+  "grace_mult": 2.0,
+  "jobs": {
+    "wally-email-check":      { "every_minutes": 120 },
+    "wally-journal-daily-post": { "every_minutes": 1440 },
+    "new-communities-weekly-glance": { "every_minutes": 10080 },
+    "plane-free-downgrade-board-check": { "runonce": true }
+  }
+}
+```
+
+```
+receiptchain audit — 2026-10-07T13:42:52+00:00
+chain: INTACT (7087 receipts)
+  OK       wally-email-check            last run 87m ago, 12 run(s)/24h
+! STALE    uskg-pause-watch             last run 31.2h ago (expected every 1440m, grace 2x)
+! MISSING  market-study                 no receipts in log
+  UNTRACKED  whatsapp-inbox-watch       10 receipt(s) not in expectations
+attention: 3 item(s)
+```
+
+A `STALE` or `MISSING` verdict means the job's body probably isn't
+emitting receipts — the accountability trail only works if every run
+emits one.
+
 ## Wiring it into cron jobs
 
 The pattern I use: each scheduled job is wrapped so the wrapper always

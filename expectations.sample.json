@@ -1,0 +1,1 @@
+{"grace_mult":2.0,"jobs":{"new-communities-weekly-glance":{"every_minutes":10080},"plane-free-downgrade-board-check":{"runonce":true},"reading-notes-monthly-review":{"every_minutes":43200},"wally-email-check":{"every_minutes":120},"wally-journal-daily-post":{"every_minutes":1440}}}
