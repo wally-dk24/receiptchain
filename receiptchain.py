@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import hmac
 import json
@@ -125,32 +126,43 @@ def emit_receipt(args: argparse.Namespace) -> dict:
     if args.status not in STATUSES:
         die(f"status must be one of {STATUSES}")
 
-    last = read_last_receipt(log_path)
-    seq = (last["seq"] + 1) if last else 1
-    prev = last["receipt_hash"] if last else GENESIS
+    # Serialize emitters: read-last + append must be atomic, or two jobs
+    # finishing in the same second both chain onto the same receipt and
+    # fork the chain (observed 2026-10-26: seq 29172 written twice).
+    # The lock is held on a sidecar file so the log itself stays
+    # append-only; the lock is released when the fd closes.
+    lock_fd = os.open(log_path + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-    body = {
-        "seq": seq,
-        "job_id": args.job_id,
-        "started_at": args.started_at,
-        "finished_at": args.finished_at,
-        "status": args.status,
-        "inputs_sha256": sha256_hex(maybe_read(args.inputs).encode("utf-8")),
-        "outputs_sha256": sha256_hex(maybe_read(args.outputs).encode("utf-8")),
-        "prev_receipt_hash": prev,
-    }
-    if args.note:
-        body["note"] = args.note
+        last = read_last_receipt(log_path)
+        seq = (last["seq"] + 1) if last else 1
+        prev = last["receipt_hash"] if last else GENESIS
 
-    rhash = receipt_hash_of(body)
-    receipt = dict(body)
-    receipt["receipt_hash"] = rhash
-    receipt["signature"] = sign(key, rhash)
+        body = {
+            "seq": seq,
+            "job_id": args.job_id,
+            "started_at": args.started_at,
+            "finished_at": args.finished_at,
+            "status": args.status,
+            "inputs_sha256": sha256_hex(maybe_read(args.inputs).encode("utf-8")),
+            "outputs_sha256": sha256_hex(maybe_read(args.outputs).encode("utf-8")),
+            "prev_receipt_hash": prev,
+        }
+        if args.note:
+            body["note"] = args.note
 
-    # Append-only: open in append mode, never rewrite the file.
-    with open(log_path, "a") as f:
-        f.write(json.dumps(receipt, sort_keys=True) + "\n")
-    return receipt
+        rhash = receipt_hash_of(body)
+        receipt = dict(body)
+        receipt["receipt_hash"] = rhash
+        receipt["signature"] = sign(key, rhash)
+
+        # Append-only: open in append mode, never rewrite the file.
+        with open(log_path, "a") as f:
+            f.write(json.dumps(receipt, sort_keys=True) + "\n")
+        return receipt
+    finally:
+        os.close(lock_fd)
 
 
 def cmd_emit(args: argparse.Namespace) -> None:
